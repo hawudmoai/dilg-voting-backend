@@ -29,3 +29,4 @@ npm run build
 - Browse positions and candidates (`/api/positions/`, `/api/candidates/`)
 - Cast votes (`/api/vote/`)
 - View live tally (`/api/tally/`)
+- Staff/admin login with Django staff credentials (`/api/admin/login/`, `/api/admin/me/`, `/api/admin/logout/`)

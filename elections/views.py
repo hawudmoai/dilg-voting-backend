@@ -2,8 +2,8 @@ from rest_framework import viewsets, status
 from rest_framework.permissions import AllowAny
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.response import Response
-
-from .models import Voter
+from django.contrib.auth import authenticate, get_user_model
+from django.core import signing
 
 from .models import Precinct, Position, Candidate, Voter, Vote
 from .serializers import (
@@ -70,6 +70,16 @@ class VoteViewSet(viewsets.ModelViewSet):
 #   AUTH HELPER
 # =======================
 
+User = get_user_model()
+ADMIN_TOKEN_SALT = "admin-session-token"
+ADMIN_TOKEN_MAX_AGE_SECONDS = 60 * 60 * 12
+
+
+def generate_admin_token(user):
+    payload = {"user_id": user.id, "username": user.get_username()}
+    return signing.dumps(payload, salt=ADMIN_TOKEN_SALT)
+
+
 def get_authenticated_voter(request):
     token = request.headers.get("X-Session-Token")
     if not token:
@@ -77,6 +87,22 @@ def get_authenticated_voter(request):
     try:
         return Voter.objects.get(session_token=token)
     except Voter.DoesNotExist:
+        return None
+
+
+def get_authenticated_admin(request):
+    token = request.headers.get("X-Admin-Token")
+    if not token:
+        return None
+
+    try:
+        payload = signing.loads(
+            token,
+            salt=ADMIN_TOKEN_SALT,
+            max_age=ADMIN_TOKEN_MAX_AGE_SECONDS,
+        )
+        return User.objects.get(id=payload.get("user_id"), is_staff=True)
+    except Exception:
         return None
 
 
@@ -148,6 +174,65 @@ def voter_me(request):
                 "name": voter.name,
                 "voter_id": voter.voter_id,
                 "has_voted": voter.has_voted,
+            },
+        }
+    )
+
+
+@api_view(["POST"])
+@permission_classes([AllowAny])
+def admin_login(request):
+    username = request.data.get("username")
+    password = request.data.get("password")
+
+    if not username or not password:
+        return Response(
+            {"error": "username and password are required"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    user = authenticate(username=username, password=password)
+    if not user or not user.is_staff:
+        return Response(
+            {"error": "Invalid admin credentials"},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    token = generate_admin_token(user)
+    return Response(
+        {
+            "token": token,
+            "admin": {
+                "username": user.get_username(),
+                "name": user.get_full_name() or user.get_username(),
+                "is_superuser": user.is_superuser,
+            },
+        }
+    )
+
+
+@api_view(["POST"])
+def admin_logout(request):
+    admin_user = get_authenticated_admin(request)
+    if not admin_user:
+        return Response({"message": "Already logged out"}, status=status.HTTP_200_OK)
+
+    return Response({"message": "Admin logged out"})
+
+
+@api_view(["GET"])
+def admin_me(request):
+    admin_user = get_authenticated_admin(request)
+    if not admin_user:
+        return Response({"authenticated": False}, status=status.HTTP_200_OK)
+
+    return Response(
+        {
+            "authenticated": True,
+            "admin": {
+                "username": admin_user.get_username(),
+                "name": admin_user.get_full_name() or admin_user.get_username(),
+                "is_superuser": admin_user.is_superuser,
             },
         }
     )
