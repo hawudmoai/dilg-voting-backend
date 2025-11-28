@@ -1,3 +1,4 @@
+from django.contrib.auth.hashers import make_password, check_password
 from django.db import models
 import uuid
 
@@ -59,8 +60,13 @@ from django.contrib.auth.hashers import make_password, check_password
 class Voter(models.Model):
     voter_id = models.CharField(max_length=50, unique=True)
     name = models.CharField(max_length=150)
-    precinct = models.ForeignKey(Precinct, on_delete=models.SET_NULL,
-                                null=True, blank=True, related_name="voters")
+    precinct = models.ForeignKey(
+        Precinct,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="voters",
+    )
     pin = models.CharField(max_length=128)  # store hash here
     has_voted = models.BooleanField(default=False)
     session_token = models.CharField(max_length=36, blank=True, null=True, unique=True)
@@ -77,6 +83,17 @@ class Voter(models.Model):
         if self.pin and not self.pin.startswith("pbkdf2_"):
             self.pin = make_password(self.pin)
         super().save(*args, **kwargs)
+
+    def start_session(self):
+        self.session_token = str(uuid.uuid4())
+        self.save(update_fields=["session_token"])
+
+    def end_session(self):
+        self.session_token = None
+        self.save(update_fields=["session_token"])
+
+    def __str__(self):
+        return f"{self.name} ({self.voter_id})"
 
 
 

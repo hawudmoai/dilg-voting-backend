@@ -123,6 +123,7 @@ def voter_login(request):
         )
 
     try:
+        # only active voters can login
         voter = Voter.objects.get(voter_id=voter_id, is_active=True)
     except Voter.DoesNotExist:
         return Response(
@@ -130,13 +131,14 @@ def voter_login(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    # use the check_pin() method so we work with hashed PINs
+    # IMPORTANT: use check_pin for hashed PINs
     if not voter.check_pin(pin):
         return Response(
             {"error": "Invalid credentials"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
+    # create / refresh session token
     voter.start_session()
 
     return Response(
@@ -147,9 +149,9 @@ def voter_login(request):
                 "voter_id": voter.voter_id,
                 "has_voted": voter.has_voted,
             },
-        }
+        },
+        status=status.HTTP_200_OK,
     )
-
 
 @api_view(["POST"])
 def voter_logout(request):
