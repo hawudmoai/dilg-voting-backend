@@ -18,6 +18,7 @@ from .models import (
     Voter,
     Vote,
     Election,
+    generate_pin,
 )
 from .serializers import (
     GradeLevelSerializer,
@@ -470,19 +471,40 @@ def admin_voters(request):
             status=status.HTTP_403_FORBIDDEN,
         )
 
+    # ---------- LIST VOTERS ----------
     if request.method == "GET":
-        voters = Voter.objects.select_related("section", "section__grade_level").all().order_by("name")
+        voters = (
+            Voter.objects.select_related("section", "section__grade_level")
+            .all()
+            .order_by("name")
+        )
         serializer = VoterSerializer(voters, many=True)
         return Response(serializer.data, status=status.HTTP_200_OK)
 
-    # POST: create new voter
+    # ---------- CREATE VOTER (POST) ----------
     serializer = AdminVoterCreateSerializer(data=request.data)
-    if serializer.is_valid():
-        voter = serializer.save()
-        out = VoterSerializer(voter).data  # no raw PIN in output
-        return Response(out, status=status.HTTP_201_CREATED)
+    if not serializer.is_valid():
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    name = serializer.validated_data["name"]
+    section = serializer.validated_data["section"]
+    raw_pin = serializer.validated_data.get("pin", "").strip()
+
+    # Auto-generate PIN if blank
+    if not raw_pin:
+        raw_pin = generate_pin()
+
+    voter = Voter(name=name, section=section)
+    voter.set_pin(raw_pin)  # hashes the PIN
+    voter.save()
+
+    # Normal voter data (includes voter_id, etc.)
+    out = VoterSerializer(voter).data
+    # Add the raw PIN only in this response
+    out["pin"] = raw_pin
+
+    return Response(out, status=status.HTTP_201_CREATED)
+
 
 
 

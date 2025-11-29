@@ -2,7 +2,6 @@
 from rest_framework import serializers
 from .models import GradeLevel, Section, Position, Candidate, Voter, Vote
 
-
 class GradeLevelSerializer(serializers.ModelSerializer):
     class Meta:
         model = GradeLevel
@@ -94,6 +93,17 @@ class VoteSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Candidate does not belong to the selected position.")
 
         return attrs
+
+
+class AdminVoterCreateSerializer(serializers.Serializer):
+    """
+    Simple serializer just to validate admin POST data for creating a voter.
+    PIN is optional – can be empty to auto-generate.
+    """
+    name = serializers.CharField(max_length=150)
+    section = serializers.PrimaryKeyRelatedField(queryset=Section.objects.all())
+    pin = serializers.CharField(required=False, allow_blank=True, max_length=10)
+
 
 
 class AdminVoterCreateSerializer(serializers.ModelSerializer):
