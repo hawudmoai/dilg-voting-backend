@@ -1,11 +1,25 @@
+# elections/serializers.py
 from rest_framework import serializers
-from .models import Precinct, Position, Candidate, Voter, Vote
+from .models import GradeLevel, Section, Position, Candidate, Voter, Vote
 
 
-class PrecinctSerializer(serializers.ModelSerializer):
+class GradeLevelSerializer(serializers.ModelSerializer):
     class Meta:
-        model = Precinct
-        fields = "__all__"
+        model = GradeLevel
+        fields = ["id", "name", "track"]
+
+
+class SectionSerializer(serializers.ModelSerializer):
+    grade_level = GradeLevelSerializer(read_only=True)
+    grade_level_id = serializers.PrimaryKeyRelatedField(
+        source="grade_level",
+        queryset=GradeLevel.objects.all(),
+        write_only=True,
+    )
+
+    class Meta:
+        model = Section
+        fields = ["id", "name", "grade_level", "grade_level_id"]
 
 
 class PositionSerializer(serializers.ModelSerializer):
@@ -19,16 +33,36 @@ class CandidateSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Candidate
-        fields = ["id", "full_name", "party", "bio", "position", "position_name"]
+        fields = [
+            "id",
+            "full_name",
+            "party",
+            "photo_url",
+            "photo_portrait_url",
+            "bio",
+            "position",
+            "position_name",
+        ]
 
 
 class VoterSerializer(serializers.ModelSerializer):
-    precinct_name = serializers.CharField(source="precinct.name", read_only=True)
-    municipality = serializers.CharField(source="precinct.municipality", read_only=True)
+    section_name = serializers.CharField(source="section.name", read_only=True)
+    grade_level = serializers.CharField(
+        source="section.grade_level", read_only=True
+    )
 
     class Meta:
         model = Voter
-        fields = ["id", "name", "voter_id", "precinct", "precinct_name", "municipality"]
+        fields = [
+            "id",
+            "name",
+            "voter_id",
+            "section",
+            "section_name",
+            "grade_level",
+            "has_voted",
+            "is_active",
+        ]
 
 
 class VoteSerializer(serializers.ModelSerializer):

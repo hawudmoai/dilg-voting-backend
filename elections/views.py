@@ -1,34 +1,80 @@
-from rest_framework import viewsets, status
-from rest_framework.permissions import AllowAny
-from rest_framework.decorators import api_view, permission_classes
-from rest_framework.response import Response
+# elections/views.py
+from datetime import datetime
+
 from django.contrib.auth import authenticate, get_user_model
 from django.core import signing
+from django.utils import timezone
 
-from .models import Precinct, Position, Candidate, Voter, Vote
+from rest_framework import viewsets, status
+from rest_framework.decorators import api_view, permission_classes
+from rest_framework.permissions import AllowAny
+from rest_framework.response import Response
+
+from .models import (
+    GradeLevel,
+    Section,
+    Position,
+    Candidate,
+    Voter,
+    Vote,
+    Election,
+)
 from .serializers import (
-    PrecinctSerializer,
+    GradeLevelSerializer,
+    SectionSerializer,
     PositionSerializer,
     CandidateSerializer,
     VoterSerializer,
     VoteSerializer,
 )
 
+User = get_user_model()
+
+
+# =======================
+#  ELECTION HELPERS
+# =======================
+
+def get_active_election():
+    """
+    Returns the currently active election (is_active=True), or None.
+    If multiple are active, it picks the most recent by start_at.
+    """
+    return Election.objects.filter(is_active=True).order_by("-start_at").first()
+
 
 # =======================
 #   VIEWSETS (CRUD / API)
 # =======================
 
-class PrecinctViewSet(viewsets.ModelViewSet):
-    queryset = Precinct.objects.all().order_by("municipality", "name")
-    serializer_class = PrecinctSerializer
+class GradeLevelViewSet(viewsets.ModelViewSet):
+    queryset = GradeLevel.objects.all().order_by("name")
+    serializer_class = GradeLevelSerializer
+    permission_classes = [AllowAny]
+
+
+class SectionViewSet(viewsets.ModelViewSet):
+    queryset = Section.objects.select_related("grade_level").all().order_by(
+        "grade_level__name", "name"
+    )
+    serializer_class = SectionSerializer
     permission_classes = [AllowAny]
 
 
 class PositionViewSet(viewsets.ModelViewSet):
-    queryset = Position.objects.filter(is_active=True).order_by("level", "name")
+    """
+    Positions filtered to the active election + is_active=True.
+    """
+    queryset = Position.objects.all()
     serializer_class = PositionSerializer
     permission_classes = [AllowAny]
+
+    def get_queryset(self):
+        qs = self.queryset.filter(is_active=True)
+        active_election = get_active_election()
+        if active_election:
+            qs = qs.filter(election=active_election)
+        return qs.order_by("level", "name")
 
 
 class CandidateViewSet(viewsets.ModelViewSet):
@@ -45,7 +91,7 @@ class CandidateViewSet(viewsets.ModelViewSet):
 
 
 class VoterViewSet(viewsets.ModelViewSet):
-    queryset = Voter.objects.select_related("precinct").all()
+    queryset = Voter.objects.select_related("section", "section__grade_level").all()
     serializer_class = VoterSerializer
     permission_classes = [AllowAny]  # tighten later
 
@@ -67,47 +113,21 @@ class VoteViewSet(viewsets.ModelViewSet):
 
 
 # =======================
-#   AUTH HELPER
+#   VOTER AUTH HELPERS
 # =======================
-
-User = get_user_model()
-ADMIN_TOKEN_SALT = "admin-session-token"
-ADMIN_TOKEN_MAX_AGE_SECONDS = 60 * 60 * 12
-
-
-def generate_admin_token(user):
-    payload = {"user_id": user.id, "username": user.get_username()}
-    return signing.dumps(payload, salt=ADMIN_TOKEN_SALT)
-
 
 def get_authenticated_voter(request):
     token = request.headers.get("X-Session-Token")
     if not token:
         return None
     try:
-        return Voter.objects.get(session_token=token)
+        return Voter.objects.get(session_token=token, is_active=True)
     except Voter.DoesNotExist:
         return None
 
 
-def get_authenticated_admin(request):
-    token = request.headers.get("X-Admin-Token")
-    if not token:
-        return None
-
-    try:
-        payload = signing.loads(
-            token,
-            salt=ADMIN_TOKEN_SALT,
-            max_age=ADMIN_TOKEN_MAX_AGE_SECONDS,
-        )
-        return User.objects.get(id=payload.get("user_id"), is_staff=True)
-    except Exception:
-        return None
-
-
 # =======================
-#   AUTH ENDPOINTS
+#   VOTER AUTH ENDPOINTS
 # =======================
 
 @api_view(["POST"])
@@ -123,7 +143,6 @@ def voter_login(request):
         )
 
     try:
-        # only active voters can login
         voter = Voter.objects.get(voter_id=voter_id, is_active=True)
     except Voter.DoesNotExist:
         return Response(
@@ -131,15 +150,13 @@ def voter_login(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    # IMPORTANT: use check_pin for hashed PINs
     if not voter.check_pin(pin):
         return Response(
             {"error": "Invalid credentials"},
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    # create / refresh session token
-    voter.start_session()
+    voter.start_session()  # sets session_token
 
     return Response(
         {
@@ -153,6 +170,7 @@ def voter_login(request):
         status=status.HTTP_200_OK,
     )
 
+
 @api_view(["POST"])
 def voter_logout(request):
     voter = get_authenticated_voter(request)
@@ -161,6 +179,28 @@ def voter_logout(request):
 
     voter.end_session()
     return Response({"message": "Logged out successfully"})
+
+
+@api_view(["POST"])
+def finish_voting(request):
+    """
+    Mark voter as finished and disable further logins.
+    """
+    voter = get_authenticated_voter(request)
+    if not voter:
+        return Response(
+            {"error": "Authentication required"},
+            status=status.HTTP_401_UNAUTHORIZED,
+        )
+
+    voter.is_active = False
+    voter.end_session()
+    voter.save(update_fields=["is_active", "session_token"])
+
+    return Response(
+        {"message": "Voting session finished. Thank you!"},
+        status=status.HTTP_200_OK,
+    )
 
 
 @api_view(["GET"])
@@ -177,9 +217,83 @@ def voter_me(request):
                 "voter_id": voter.voter_id,
                 "has_voted": voter.has_voted,
             },
-        }
+        },
+        status=status.HTTP_200_OK,
     )
 
+
+# =======================
+#   ELECTION STATUS
+# =======================
+
+@api_view(["GET"])
+@permission_classes([AllowAny])
+def election_status(request):
+    """
+    Info about the current active election, or 'no election' flag.
+    """
+    election = (
+        Election.objects.filter(is_active=True)
+        .order_by("-start_at")
+        .first()
+    )
+
+    if not election:
+        return Response(
+            {
+                "has_election": False,
+                "is_active": False,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+    return Response(
+        {
+            "has_election": True,
+            "is_active": True,
+            "name": election.name,
+            "start_at": election.start_at,
+            "end_at": election.end_at,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+# =======================
+#   ADMIN AUTH (TOKENS)
+# =======================
+
+ADMIN_SALT = "admin-session"
+ADMIN_TOKEN_MAX_AGE_SECONDS = 60 * 60 * 12  # 12 hours
+
+
+def create_admin_token(user):
+    data = {"user_id": user.id}
+    return signing.dumps(data, salt=ADMIN_SALT)
+
+
+def get_admin_from_request(request):
+    token = request.headers.get("X-Admin-Token")
+    if not token:
+        return None
+
+    try:
+        data = signing.loads(
+            token,
+            salt=ADMIN_SALT,
+            max_age=ADMIN_TOKEN_MAX_AGE_SECONDS,
+        )
+        user_id = data.get("user_id")
+        if not user_id:
+            return None
+        return User.objects.get(id=user_id, is_staff=True)
+    except (signing.BadSignature, signing.SignatureExpired, User.DoesNotExist):
+        return None
+
+
+# =======================
+#   ADMIN AUTH ENDPOINTS
+# =======================
 
 @api_view(["POST"])
 @permission_classes([AllowAny])
@@ -200,31 +314,29 @@ def admin_login(request):
             status=status.HTTP_400_BAD_REQUEST,
         )
 
-    token = generate_admin_token(user)
+    token = create_admin_token(user)
+
     return Response(
         {
             "token": token,
             "admin": {
-                "username": user.get_username(),
-                "name": user.get_full_name() or user.get_username(),
-                "is_superuser": user.is_superuser,
+                "id": user.id,
+                "username": user.username,
+                "full_name": user.get_full_name() or user.username,
             },
-        }
+        },
+        status=status.HTTP_200_OK,
     )
 
 
 @api_view(["POST"])
 def admin_logout(request):
-    admin_user = get_authenticated_admin(request)
-    if not admin_user:
-        return Response({"message": "Already logged out"}, status=status.HTTP_200_OK)
-
-    return Response({"message": "Admin logged out"})
+    return Response({"message": "Admin logged out"}, status=status.HTTP_200_OK)
 
 
 @api_view(["GET"])
 def admin_me(request):
-    admin_user = get_authenticated_admin(request)
+    admin_user = get_admin_from_request(request)
     if not admin_user:
         return Response({"authenticated": False}, status=status.HTTP_200_OK)
 
@@ -232,11 +344,12 @@ def admin_me(request):
         {
             "authenticated": True,
             "admin": {
-                "username": admin_user.get_username(),
-                "name": admin_user.get_full_name() or admin_user.get_username(),
+                "username": admin_user.username,
+                "full_name": admin_user.get_full_name() or admin_user.username,
                 "is_superuser": admin_user.is_superuser,
             },
-        }
+        },
+        status=status.HTTP_200_OK,
     )
 
 
@@ -244,27 +357,30 @@ def admin_me(request):
 #   VOTING ENDPOINTS
 # =======================
 
-@api_view(["GET"])
-def get_candidates(request):
-    """
-    Simple list of all candidates (frontend can filter by position if needed).
-    """
-    qs = Candidate.objects.select_related("position").all()
-    serializer = CandidateSerializer(qs, many=True)
-    return Response(serializer.data)
-
-
 @api_view(["POST"])
 def cast_vote(request):
     """
-    Cast a vote for a specific position & candidate by the authenticated voter.
-    Enforces: 1 vote per voter per position.
+    Authenticated voter casts one vote for a candidate in the active election.
     """
     voter = get_authenticated_voter(request)
     if not voter:
         return Response(
             {"error": "Authentication required"},
             status=status.HTTP_401_UNAUTHORIZED,
+        )
+
+    active_election = get_active_election()
+    if not active_election:
+        return Response(
+            {"error": "No active election is configured."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    now = timezone.now()
+    if not (active_election.start_at <= now <= active_election.end_at):
+        return Response(
+            {"error": "Election is not currently open for voting."},
+            status=status.HTTP_400_BAD_REQUEST,
         )
 
     position_id = request.data.get("position_id")
@@ -277,19 +393,23 @@ def cast_vote(request):
         )
 
     try:
-        position = Position.objects.get(id=position_id)
+        position = Position.objects.get(
+            id=position_id,
+            election=active_election,
+            is_active=True,
+        )
     except Position.DoesNotExist:
-        return Response({"error": "Position not found"}, status=status.HTTP_404_NOT_FOUND)
+        return Response(
+            {"error": "Position not found in active election"},
+            status=status.HTTP_404_NOT_FOUND,
+        )
 
     try:
-        candidate = Candidate.objects.get(id=candidate_id)
+        candidate = Candidate.objects.get(id=candidate_id, position=position)
     except Candidate.DoesNotExist:
-        return Response({"error": "Candidate not found"}, status=status.HTTP_404_NOT_FOUND)
-
-    if candidate.position_id != position.id:
         return Response(
-            {"error": "Candidate does not belong to this position"},
-            status=status.HTTP_400_BAD_REQUEST,
+            {"error": "Candidate not found for this position"},
+            status=status.HTTP_404_NOT_FOUND,
         )
 
     # check if voter already voted for this position
@@ -301,7 +421,6 @@ def cast_vote(request):
 
     Vote.objects.create(voter=voter, position=position, candidate=candidate)
 
-    # optional: mark that voter has at least one vote
     if not voter.has_voted:
         voter.has_voted = True
         voter.save(update_fields=["has_voted"])
@@ -310,23 +429,73 @@ def cast_vote(request):
 
 
 @api_view(["GET"])
+def my_votes(request):
+    """
+    Return the votes of the currently authenticated voter.
+    """
+    voter = get_authenticated_voter(request)
+    if not voter:
+        return Response(
+            {"error": "Authentication required"},
+            status=status.HTTP_401_UNAUTHORIZED,
+        )
+
+    qs = Vote.objects.filter(voter=voter).select_related("position", "candidate")
+
+    data = [
+        {
+            "position_id": v.position_id,
+            "position": v.position.name,
+            "candidate_id": v.candidate_id,
+            "candidate": v.candidate.full_name,
+        }
+        for v in qs
+    ]
+
+    return Response(data)
+
+
+# =======================
+#   ADMIN TALLY + STATS
+# =======================
+
+@api_view(["GET"])
 def admin_tally(request):
     """
-    Returns tally grouped by position and candidate:
-    [
-      {
-        "position": "Governor",
-        "position_id": 1,
-        "candidates": [
-           {"candidate_id": 3, "full_name": "...", "party": "...", "votes": 10},
-           ...
-        ]
-      },
-      ...
-    ]
+    Tally for a given election.
+
+    - If ?election_id=<id> is provided: use that election
+    - Otherwise: use the currently active election
     """
+    admin_user = get_admin_from_request(request)
+    if not admin_user:
+        return Response(
+            {"error": "Admin authentication required"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    election_id = request.query_params.get("election_id")
+
+    if election_id:
+        try:
+            election = Election.objects.get(id=election_id)
+        except Election.DoesNotExist:
+            return Response(
+                {"error": "Election not found"},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+    else:
+        election = get_active_election()
+
+    if not election:
+        return Response([], status=status.HTTP_200_OK)
+
     data = []
-    positions = Position.objects.filter(is_active=True).prefetch_related("candidates")
+    positions = (
+        Position.objects.filter(election=election, is_active=True)
+        .prefetch_related("candidates")
+        .order_by("level", "name")
+    )
 
     for pos in positions:
         candidates_data = []
@@ -350,4 +519,173 @@ def admin_tally(request):
             }
         )
 
-    return Response(data)
+    return Response(data, status=status.HTTP_200_OK)
+
+
+@api_view(["GET"])
+def admin_stats(request):
+    admin_user = get_admin_from_request(request)
+    if not admin_user:
+        return Response(
+            {"error": "Admin authentication required"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    total_voters = Voter.objects.count()
+    voted_count = Voter.objects.filter(has_voted=True).count()
+
+    turnout_percent = 0
+    if total_voters > 0:
+        turnout_percent = round(voted_count / total_voters * 100, 2)
+
+    return Response(
+        {
+            "total_voters": total_voters,
+            "voted_count": voted_count,
+            "turnout_percent": turnout_percent,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+@api_view(["POST"])
+def admin_end_election(request):
+    """
+    End the currently active election immediately.
+    Sets is_active = False and end_at = now (if not already past).
+    """
+    admin_user = get_admin_from_request(request)
+    if not admin_user:
+        return Response(
+            {"error": "Admin authentication required"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    election = get_active_election()
+    if not election:
+        return Response(
+            {"error": "No active election to end."},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    now = timezone.now()
+
+    election.is_active = False
+    if election.end_at is None or election.end_at > now:
+        election.end_at = now
+    election.save(update_fields=["is_active", "end_at"])
+
+    return Response(
+        {
+            "message": f'"{election.name}" has been ended.',
+            "ended_at": election.end_at,
+        },
+        status=status.HTTP_200_OK,
+    )
+
+
+# =======================
+#   ADMIN ELECTION LIST + CREATE
+# =======================
+
+@api_view(["GET", "POST"])
+def admin_elections(request):
+    """
+    GET: list all elections with summary stats
+    POST: create a new election
+    """
+    admin_user = get_admin_from_request(request)
+    if not admin_user:
+        return Response(
+            {"error": "Admin authentication required"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    # ---------- CREATE NEW ELECTION ----------
+    if request.method == "POST":
+        name = request.data.get("name")
+        start_at_str = request.data.get("start_at")
+        end_at_str = request.data.get("end_at")
+        is_active = bool(request.data.get("is_active"))
+
+        if not name or not start_at_str or not end_at_str:
+            return Response(
+                {"error": "name, start_at and end_at are required."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            # parse ISO strings from <input type="datetime-local">
+            start_dt = datetime.fromisoformat(start_at_str)
+            end_dt = datetime.fromisoformat(end_at_str)
+        except ValueError:
+            return Response(
+                {
+                    "error": "Invalid datetime format. Use ISO 8601, "
+                             "e.g. 2025-11-29T14:30"
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # make them timezone-aware if needed
+        if timezone.is_naive(start_dt):
+            start_dt = timezone.make_aware(start_dt, timezone.get_current_timezone())
+        if timezone.is_naive(end_dt):
+            end_dt = timezone.make_aware(end_dt, timezone.get_current_timezone())
+
+        if end_dt <= start_dt:
+            return Response(
+                {"error": "end_at must be after start_at."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        election = Election.objects.create(
+            name=name,
+            start_at=start_dt,
+            end_at=end_dt,
+            is_active=is_active,
+        )
+
+        # if this one is marked active, deactivate others
+        if is_active:
+            Election.objects.exclude(id=election.id).update(is_active=False)
+
+        return Response(
+            {
+                "id": election.id,
+                "name": election.name,
+                "start_at": election.start_at,
+                "end_at": election.end_at,
+                "is_active": election.is_active,
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+    # ---------- LIST ELECTIONS WITH STATS (GET) ----------
+    elections = Election.objects.all().order_by("-start_at")
+
+    result = []
+    for e in elections:
+        positions = Position.objects.filter(election=e)
+        candidates = Candidate.objects.filter(position__in=positions)
+        votes = Vote.objects.filter(position__in=positions)
+
+        total_voters = Voter.objects.count()
+        unique_voters = votes.values("voter_id").distinct().count()
+        turnout_percent = (unique_voters / total_voters * 100) if total_voters else 0
+
+        result.append(
+            {
+                "id": e.id,
+                "name": e.name,
+                "start_at": e.start_at,
+                "end_at": e.end_at,
+                "is_active": e.is_active,
+                "total_positions": positions.count(),
+                "total_candidates": candidates.count(),
+                "total_votes": votes.count(),
+                "turnout_percent": turnout_percent,
+            }
+        )
+
+    return Response(result, status=status.HTTP_200_OK)
