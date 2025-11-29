@@ -26,6 +26,7 @@ from .serializers import (
     CandidateSerializer,
     VoterSerializer,
     VoteSerializer,
+    AdminVoterCreateSerializer,
 )
 
 User = get_user_model()
@@ -453,6 +454,36 @@ def my_votes(request):
     ]
 
     return Response(data)
+
+
+@api_view(["GET", "POST"])
+def admin_voters(request):
+    """
+    Admin-only endpoint:
+    GET  -> list all voters
+    POST -> create a new voter (with raw PIN, which will be hashed by the model)
+    """
+    admin_user = get_admin_from_request(request)
+    if not admin_user:
+        return Response(
+            {"error": "Admin authentication required"},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    if request.method == "GET":
+        voters = Voter.objects.select_related("section", "section__grade_level").all().order_by("name")
+        serializer = VoterSerializer(voters, many=True)
+        return Response(serializer.data, status=status.HTTP_200_OK)
+
+    # POST: create new voter
+    serializer = AdminVoterCreateSerializer(data=request.data)
+    if serializer.is_valid():
+        voter = serializer.save()
+        out = VoterSerializer(voter).data  # no raw PIN in output
+        return Response(out, status=status.HTTP_201_CREATED)
+
+    return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
 
 
 # =======================

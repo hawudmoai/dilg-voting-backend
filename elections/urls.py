@@ -41,4 +41,7 @@ urlpatterns = [
 
     # ADMIN ELECTIONS (list + create)
     path('admin/elections/', views.admin_elections),
+
+    # ADMIN VOTERS (list + create)
+    path('admin/voters/', views.admin_voters),
 ]

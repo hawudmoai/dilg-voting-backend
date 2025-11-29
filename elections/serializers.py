@@ -94,3 +94,24 @@ class VoteSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Candidate does not belong to the selected position.")
 
         return attrs
+
+
+class AdminVoterCreateSerializer(serializers.ModelSerializer):
+    """
+    Used for admin-side creation of voters.
+    Allows passing a raw PIN, which will be hashed by the model's save().
+    """
+    pin = serializers.CharField(write_only=True, required=False, allow_blank=True)
+
+    class Meta:
+        model = Voter
+        fields = [
+            "id",
+            "name",
+            "voter_id",
+            "section",
+            "pin",
+            "has_voted",
+            "is_active",
+        ]
+        read_only_fields = ["voter_id", "has_voted", "is_active"]
