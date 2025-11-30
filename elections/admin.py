@@ -11,6 +11,7 @@ from .models import (
     Voter,
     Vote,
     AdminUser,
+    Nomination,   # 👈 NEW
     generate_pin,
 )
 
@@ -106,6 +107,29 @@ class VoteAdmin(admin.ModelAdmin):
     list_display = ("voter", "position", "candidate", "created_at")
     list_filter = ("position", "candidate")
     search_fields = ("voter__name", "candidate__full_name")
+
+
+# -------------------------
+# NOMINATION
+# -------------------------
+@admin.register(Nomination)
+class NominationAdmin(admin.ModelAdmin):
+    list_display = (
+        "nominee_name",
+        "position",
+        "election",
+        "nominator",
+        "nominee_section",
+        "created_at",
+    )
+    list_filter = ("election", "position", "nominee_section")
+    search_fields = (
+        "nominee_name",
+        "nominator__name",
+        "position__name",
+        "election__name",
+    )
+    autocomplete_fields = ("position", "election", "nominator", "nominee_section")
 
 
 # -------------------------

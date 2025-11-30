@@ -19,6 +19,7 @@ from .models import (
     Vote,
     Election,
     generate_pin,
+    Nomination,
 )
 from .serializers import (
     GradeLevelSerializer,
@@ -28,6 +29,8 @@ from .serializers import (
     VoterSerializer,
     VoteSerializer,
     AdminVoterCreateSerializer,
+    NominationSerializer,
+    NominationCreateSerializer
 )
 
 User = get_user_model()
@@ -205,6 +208,71 @@ def finish_voting(request):
     )
 
 
+@api_view(["GET", "POST"])
+def nominations(request):
+    voter = get_authenticated_voter(request)
+    if not voter:
+        return Response({"error": "Authentication required"}, status=401)
+
+    election = get_active_election()
+    if not election:
+        return Response({"error": "No active election."}, status=400)
+
+    now = timezone.now()
+    if now >= election.start_at:
+        return Response({"error": "Nominations are closed."}, status=400)
+
+    if request.method == "GET":
+        qs = Nomination.objects.filter(
+            election=election,
+            nominator=voter
+        ).select_related("position", "nominee_section")
+        
+        return Response(NominationSerializer(qs, many=True).data)
+
+    # POST = submit/update nomination
+    ser = NominationCreateSerializer(data=request.data)
+    if not ser.is_valid():
+        return Response(ser.errors, status=400)
+
+    pos_id = ser.validated_data["position_id"]
+    nominee_name = ser.validated_data["nominee_name"].strip()
+    nominee_section_id = ser.validated_data.get("nominee_section_id")
+    reason = ser.validated_data.get("reason", "").strip()
+
+    # Validate position
+    try:
+        position = Position.objects.get(id=pos_id, election=election, is_active=True)
+    except Position.DoesNotExist:
+        return Response({"error": "Invalid position."}, status=404)
+
+    # Optional section
+    nominee_section = None
+    if nominee_section_id:
+        try:
+            nominee_section = Section.objects.get(id=nominee_section_id)
+        except Section.DoesNotExist:
+            return Response({"error": "Section not found"}, status=404)
+
+    nomination, created = Nomination.objects.update_or_create(
+        election=election,
+        position=position,
+        nominator=voter,
+        defaults={
+            "nominee_name": nominee_name,
+            "nominee_section": nominee_section,
+            "reason": reason,
+        }
+    )
+
+    return Response(
+        NominationSerializer(nomination).data,
+        status=201 if created else 200
+    )
+
+
+
+
 @api_view(["GET"])
 def voter_me(request):
     voter = get_authenticated_voter(request)
@@ -222,6 +290,52 @@ def voter_me(request):
         },
         status=status.HTTP_200_OK,
     )
+
+
+
+@api_view(["GET"])
+def admin_nominations(request):
+    admin = get_admin_from_request(request)
+    if not admin:
+        return Response({"error": "Admin authentication required"}, status=403)
+
+    election_id = request.query_params.get("election_id")
+    position_id = request.query_params.get("position_id")
+
+    qs = Nomination.objects.select_related(
+        "position", "election", "nominator", "nominee_section"
+    )
+
+    if election_id:
+        qs = qs.filter(election_id=election_id)
+    if position_id:
+        qs = qs.filter(position_id=position_id)
+
+    return Response(NominationSerializer(qs, many=True).data)
+
+
+@api_view(["POST"])
+def admin_promote_nomination(request, nomination_id):
+    admin = get_admin_from_request(request)
+    if not admin:
+        return Response({"error": "Admin authentication required"}, status=403)
+
+    try:
+        nom = Nomination.objects.select_related("position").get(id=nomination_id)
+    except Nomination.DoesNotExist:
+        return Response({"error": "Nomination not found"}, status=404)
+
+    candidate, created = Candidate.objects.get_or_create(
+        position=nom.position,
+        full_name=nom.nominee_name,
+        defaults={"party": "", "bio": nom.reason},
+    )
+
+    return Response({
+        "candidate": CandidateSerializer(candidate).data,
+        "from_nomination": nom.id,
+        "created": created,
+    })
 
 
 # =======================
@@ -742,3 +856,35 @@ def admin_elections(request):
         )
 
     return Response(result, status=status.HTTP_200_OK)
+
+
+@api_view(["POST"])
+def admin_reset_voters(request):
+    admin = get_admin_from_request(request)
+    if not admin:
+        return Response({"error": "Admin authentication required"}, status=403)
+
+    reset_pins = bool(request.data.get("reset_pins", False))
+
+    voters = Voter.objects.all()
+    count = 0
+
+    for v in voters:
+        v.has_voted = False
+        v.is_active = True
+        v.session_token = None
+
+        if reset_pins:
+            new_pin = generate_pin()
+            v.set_pin(new_pin)
+            v.save()
+            v.raw_pin = new_pin  # temp for output
+        else:
+            v.save()
+
+        count += 1
+
+    return Response({
+        "message": f"Reset {count} voters.",
+        "reset_pins": reset_pins,
+    })

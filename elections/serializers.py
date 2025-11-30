@@ -125,3 +125,44 @@ class AdminVoterCreateSerializer(serializers.ModelSerializer):
             "is_active",
         ]
         read_only_fields = ["voter_id", "has_voted", "is_active"]
+
+
+from .models import Nomination
+
+class NominationSerializer(serializers.ModelSerializer):
+    position_name = serializers.CharField(source="position.name", read_only=True)
+    election_name = serializers.CharField(source="election.name", read_only=True)
+    nominator_name = serializers.CharField(source="nominator.name", read_only=True)
+    nominee_section_name = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Nomination
+        fields = [
+            "id",
+            "election",
+            "election_name",
+            "position",
+            "position_name",
+            "nominator",
+            "nominator_name",
+            "nominee_name",
+            "nominee_section",
+            "nominee_section_name",
+            "reason",
+            "created_at",
+        ]
+
+    def get_nominee_section_name(self, obj):
+        if obj.nominee_section:
+            sec = obj.nominee_section
+            if sec.grade_level:
+                return f"{sec.grade_level.name} – {sec.name}"
+            return sec.name
+        return None
+
+
+class NominationCreateSerializer(serializers.Serializer):
+    position_id = serializers.IntegerField()
+    nominee_name = serializers.CharField(max_length=200)
+    nominee_section_id = serializers.IntegerField(required=False, allow_null=True)
+    reason = serializers.CharField(required=False, allow_blank=True)

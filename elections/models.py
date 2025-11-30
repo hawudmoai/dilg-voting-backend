@@ -244,6 +244,47 @@ class Vote(models.Model):
         return f"Vote by {self.voter} for {self.candidate} ({self.position})"
 
 
+class Nomination(models.Model):
+    """
+    One nomination per (voter, position, election).
+    Voter nominates ANY person (free text name).
+    Admin later promotes nominations to Candidates.
+    """
+    election = models.ForeignKey(
+        Election,
+        on_delete=models.CASCADE,
+        related_name="nominations",
+    )
+    position = models.ForeignKey(
+        Position,
+        on_delete=models.CASCADE,
+        related_name="nominations",
+    )
+    nominator = models.ForeignKey(
+        Voter,
+        on_delete=models.CASCADE,
+        related_name="nominations_made",
+    )
+    nominee_name = models.CharField(max_length=200)
+    nominee_section = models.ForeignKey(
+        Section,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="nominations_received",
+    )
+    reason = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("election", "position", "nominator")
+        ordering = ["position__name", "nominee_name"]
+
+    def __str__(self):
+        return f"{self.nominee_name} for {self.position.name}"
+
+
+
 # -------------------------
 #  DJANGO-USER ADMIN SESSIONS
 # -------------------------

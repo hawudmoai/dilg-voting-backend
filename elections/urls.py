@@ -44,4 +44,13 @@ urlpatterns = [
 
     # ADMIN VOTERS (list + create)
     path('admin/voters/', views.admin_voters),
+
+    # Nominations
+    path("nominations/", views.nominations),
+    path("admin/nominations/", views.admin_nominations),
+    path("admin/nominations/<int:nomination_id>/promote/", views.admin_promote_nomination),
+
+    # Reset Voters
+    path("admin/reset-voters/", views.admin_reset_voters),
+
 ]
