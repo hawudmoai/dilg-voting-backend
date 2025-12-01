@@ -124,7 +124,7 @@ CORS_ALLOW_HEADERS = list(default_headers) + [
 
 LANGUAGE_CODE = 'en-us'
 
-TIME_ZONE = 'UTC'
+TIME_ZONE = 'Asia/Manila'
 
 USE_I18N = True
 
